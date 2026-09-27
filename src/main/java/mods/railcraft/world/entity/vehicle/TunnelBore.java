@@ -103,6 +103,8 @@ public class TunnelBore extends RailcraftMinecart implements Linkable {
   protected int boreRotationAngle;
   private boolean active;
   private int clock;
+
+  private static final int RESTOCK_INTERVAL_TICKS = 8;
   private int burnTime;
   private int fuel;
   private final boolean constructed;
@@ -542,7 +544,26 @@ public class TunnelBore extends RailcraftMinecart implements Linkable {
     }
   }
 
+  /**
+   * Whether it is time to restock from the rest of the train. Pulling searches every cart's
+   * inventory, a pull brings a whole stack, which lasts far longer than this interval.
+   */
+  private boolean shouldRestock(ContainerMapper container) {
+    return this.clock % RESTOCK_INTERVAL_TICKS == 0 && hasRoom(container);
+  }
+
+  /**
+   * Whether any slot of the container can take at least one more item.
+   */
+  private static boolean hasRoom(ContainerMapper container) {
+    return container.stream().anyMatch(slot -> !slot.hasItem()
+        || slot.item().getCount() < slot.item().getMaxStackSize());
+  }
+
   protected void stockBallast() {
+    if (!this.shouldRestock(this.ballastContainer)) {
+      return;
+    }
     var stack = RollingStock.getOrThrow(this).pullItem(this.ballastContainer::canFit);
     if (!stack.isEmpty()) {
       this.ballastContainer.insert(stack);
@@ -589,6 +610,9 @@ public class TunnelBore extends RailcraftMinecart implements Linkable {
   }
 
   protected void stockTracks() {
+    if (!this.shouldRestock(this.trackContainer)) {
+      return;
+    }
     var stack = RollingStock.getOrThrow(this).pullItem(this.trackContainer::canFit);
     if (!stack.isEmpty()) {
       this.trackContainer.insert(stack);
@@ -907,6 +931,9 @@ public class TunnelBore extends RailcraftMinecart implements Linkable {
   }
 
   protected void stockFuel() {
+    if (!this.shouldRestock(this.fuelContainer)) {
+      return;
+    }
     var stack = RollingStock.getOrThrow(this).pullItem(this.fuelContainer::canFit);
     if (!stack.isEmpty()) {
       this.fuelContainer.insert(stack);

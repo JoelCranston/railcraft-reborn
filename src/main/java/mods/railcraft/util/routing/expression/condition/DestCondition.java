@@ -14,7 +14,7 @@ public class DestCondition {
   public static Expression parse(String line) throws RoutingLogicException {
     var statement = RoutingStatementParser.parse(KEYWORD, true, line);
     Predicate<String> predicate = statement.isRegex()
-        ? statement.pattern().asMatchPredicate()
+        ? statement::matches
         : s -> s.startsWith(statement.value());
     return (router, rollingStock) -> {
       if (rollingStock.entity() instanceof Routable routable) {

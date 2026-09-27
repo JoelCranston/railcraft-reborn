@@ -30,6 +30,11 @@ public class LogBookBlockEntity extends RailcraftBlockEntity {
 
   private static final float SEARCH_RADIUS = 16;
   private static final int BOOK_LINES_PER_PAGE = 13;
+  /**
+   * How many days of visits are kept, older days are dropped so the log (and the screen payload)
+   * doesn't grow forever.
+   */
+  private static final int MAX_LOGGED_DAYS = 90;
   private final Multimap<LocalDate, String> log = HashMultimap.create();
   private int clock = 0;
 
@@ -53,6 +58,8 @@ public class LogBookBlockEntity extends RailcraftBlockEntity {
             .map(NameAndId::name)
             .toList());
         if (isChanged) {
+          var oldest = date.minusDays(MAX_LOGGED_DAYS - 1);
+          blockEntity.log.keySet().removeIf(day -> day.isBefore(oldest));
           blockEntity.setChanged();
         }
       }

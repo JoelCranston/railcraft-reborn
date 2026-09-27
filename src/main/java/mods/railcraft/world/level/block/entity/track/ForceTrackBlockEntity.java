@@ -25,7 +25,24 @@ public final class ForceTrackBlockEntity extends RailcraftBlockEntity {
   }
 
   public void neighborChanged() {
-    this.emitter.notifyTrackChange();
+    var emitter = this.getEmitter();
+    if (emitter != null) {
+      emitter.notifyTrackChange();
+    }
+  }
+
+  /**
+   * The emitter, looked up when needed. Never loads the emitter's chunk.
+   */
+  @Nullable
+  private ForceTrackEmitterBlockEntity getEmitter() {
+    if ((this.emitter == null || this.emitter.isRemoved()) && this.emitterPos != null
+        && this.level != null && this.level.isLoaded(this.emitterPos)) {
+      this.emitter = this.level
+          .getBlockEntity(this.emitterPos, RailcraftBlockEntityTypes.FORCE_TRACK_EMITTER.get())
+          .orElse(null);
+    }
+    return this.emitter;
   }
 
   public void setEmitter(ForceTrackEmitterBlockEntity emitter) {
@@ -40,20 +57,16 @@ public final class ForceTrackBlockEntity extends RailcraftBlockEntity {
   @Override
   public void onLoad() {
     super.onLoad();
-    if (this.emitterPos == null) {
-      this.emitter = null;
-      return;
-    }
-    this.emitter = this.level
-        .getBlockEntity(this.emitterPos, RailcraftBlockEntityTypes.FORCE_TRACK_EMITTER.get())
-        .orElse(null);
+    this.emitter = null;
+    this.getEmitter();
   }
 
   @Override
   public void preRemoveSideEffects(BlockPos pos, BlockState state) {
     super.preRemoveSideEffects(pos, state);
-    if (this.emitter != null) {
-      this.emitter.clearTracks(this.getBlockPos());
+    var emitter = this.getEmitter();
+    if (emitter != null) {
+      emitter.clearTracks(this.getBlockPos());
     }
 
     if (this.level instanceof ServerLevel serverLevel) {

@@ -225,6 +225,13 @@ public class SteamBoiler implements ValueIOSerializable {
     }
     this.partialConversions -= waterCost;
 
+    // Only boil as much water as the steam tank can still take
+    waterCost = Math.min(waterCost,
+        this.steamTank.getRemainingSpace() / SteamConstants.STEAM_PER_UNIT_WATER);
+    if (waterCost <= 0) {
+      return 0;
+    }
+
     try (var tx = Transaction.openRoot()) {
       int waterExtracted = this.waterTank
           .internalExtract(FluidResource.of(Fluids.WATER), waterCost, tx);

@@ -113,6 +113,21 @@ public class LockingTrackBlockEntity extends RailcraftBlockEntity implements Loc
     this.releaseCart(); // Release any carts still holding on
   }
 
+  @Override
+  public void preRemoveSideEffects(BlockPos pos, BlockState state) {
+    super.preRemoveSideEffects(pos, state);
+    // The track is gone for good and serverTick won't run again, release the train right away
+    if (this.currentTrain != null) {
+      this.currentTrain.removeLock(this.lockId);
+    }
+    if (this.prevCart != null) {
+      var train = RollingStock.getOrThrow(this.prevCart).train();
+      if (train != null) {
+        train.removeLock(this.lockId);
+      }
+    }
+  }
+
   private void lockCurrentCart() {
     if (this.currentCart != null) {
       var rollingStock = RollingStock.getOrThrow(this.currentCart);

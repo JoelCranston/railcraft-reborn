@@ -39,9 +39,12 @@ public abstract class CrafterModule<T extends ModuleProvider> extends ContainerM
 
   protected void reset() {
     // this.setDuration(0);
+    var changed = this.progress != 0 || this.processing;
     this.setProgress(0);
     this.setProcessing(false);
-    this.provider.syncToClient();
+    if (changed) {
+      this.provider.syncToClient();
+    }
   }
 
   public final boolean isProcessing() {

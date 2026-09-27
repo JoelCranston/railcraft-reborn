@@ -64,6 +64,10 @@ public abstract class AbstractSignalNetwork<T extends BlockEntityLike>
 
   @Nullable
   protected T getBlockEntity(BlockPos blockPos) {
+    // Never load a peer's chunk
+    if (!this.getLevel().isLoaded(blockPos)) {
+      return null;
+    }
     var blockEntity = this.getLevel().getBlockEntity(blockPos);
     return this.peerType.isInstance(blockEntity) && !blockEntity.isRemoved()
         ? this.peerType.cast(blockEntity)
@@ -99,7 +103,9 @@ public abstract class AbstractSignalNetwork<T extends BlockEntityLike>
 
   @Override
   public void refresh() {
-    this.peers.removeIf(peerPos -> this.peerAt(peerPos).filter(this::refreshPeer).isEmpty());
+    // Peers in unloaded chunks can't be checked, they are kept
+    this.peers.removeIf(peerPos -> this.getLevel().isLoaded(peerPos)
+        && this.peerAt(peerPos).filter(this::refreshPeer).isEmpty());
   }
 
   protected boolean refreshPeer(T peer) {

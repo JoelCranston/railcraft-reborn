@@ -64,14 +64,14 @@ public class WorldSpikeMinecart extends RailcraftMinecart {
                 loadChunk.x(), loadChunk.z(), true, false);
           }
         }
-        var modified = this.chunkSet.removeAll(newChunkSet);
-        if (modified) {
-          for (long chunkPos : chunkSet) {
-            int x = (int) chunkPos;
-            int z = (int) (chunkPos >> 32);
-            LOGGER.info("Unload chunk [X: {}, Z: {}]", x, z);
-            Railcraft.CHUNK_CONTROLLER.forceChunk(serverLevel, this.uuid, x, z, false, false);
-          }
+        // Release every chunk of the old area that isn't part of the new one, the areas don't
+        // overlap at all after a teleport or a fast move
+        this.chunkSet.removeAll(newChunkSet);
+        for (long chunkPos : this.chunkSet) {
+          int x = (int) chunkPos;
+          int z = (int) (chunkPos >> 32);
+          LOGGER.info("Unload chunk [X: {}, Z: {}]", x, z);
+          Railcraft.CHUNK_CONTROLLER.forceChunk(serverLevel, this.uuid, x, z, false, false);
         }
         this.chunkSet.clear();
         this.chunkSet.addAll(newChunkSet);
@@ -82,9 +82,12 @@ public class WorldSpikeMinecart extends RailcraftMinecart {
   }
 
   @Override
-  public void remove(RemovalReason reason) {
-    super.remove(reason);
-    if (this.level() instanceof ServerLevel serverLevel) {
+  public void onRemoval(RemovalReason reason) {
+    super.onRemoval(reason);
+    // Chunks stay loaded while the cart is merely unloaded (e.g. the server stops), any other
+    // removal, including a dimension change, releases them.
+    if (reason != RemovalReason.UNLOADED_TO_CHUNK && reason != RemovalReason.UNLOADED_WITH_PLAYER
+        && this.level() instanceof ServerLevel serverLevel) {
       LOGGER.info("Minecart removed");
       for (long chunkPos : this.chunkSet) {
         int x = (int) chunkPos;

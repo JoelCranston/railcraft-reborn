@@ -112,7 +112,8 @@ public class TrainDispenserBlockEntity extends CartDispenserBlockEntity {
     var pattern = ContainerManifest.create(this.invPattern);
     var buffer = ContainerManifest.create(this.container(), pattern.keySet());
 
-    return pattern.values().stream().anyMatch(e -> buffer.count(e.key()) >= e.count());
+    return !pattern.isEmpty()
+        && pattern.values().stream().allMatch(e -> buffer.count(e.key()) >= e.count());
   }
 
   public AdvancedContainer getInvPattern() {

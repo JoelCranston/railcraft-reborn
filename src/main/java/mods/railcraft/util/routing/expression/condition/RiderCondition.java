@@ -90,7 +90,7 @@ public class RiderCondition {
         return passengers.anyMatch(Player.class::isInstance);
       }
       BiPredicate<String, String> predicate = context.statement.isRegex()
-          ? String::matches
+          ? (value, regex) -> RoutingStatementParser.matches(regex, value)
           : String::equalsIgnoreCase;
       return passengers.anyMatch(e -> e instanceof Player &&
           predicate.test(e.getName().getString(), context.tokens[1]));
@@ -100,7 +100,7 @@ public class RiderCondition {
         return passengers.anyMatch(Entity::hasCustomName);
       }
       BiPredicate<String, String> predicate = context.statement.isRegex()
-          ? String::matches
+          ? (value, regex) -> RoutingStatementParser.matches(regex, value)
           : String::equalsIgnoreCase;
       return passengers.anyMatch(e -> e.hasCustomName() &&
           predicate.test(e.getCustomName().getString(), context.tokens[1]));

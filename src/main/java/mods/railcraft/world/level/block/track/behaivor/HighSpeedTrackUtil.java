@@ -15,6 +15,7 @@ import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.BaseRailBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.RailShape;
 
 public final class HighSpeedTrackUtil {
 
@@ -22,9 +23,11 @@ public final class HighSpeedTrackUtil {
   private static final float SPEED_SLOPE = 0.45F;
 
   public static double getMaxSpeed(Level level, @Nullable AbstractMinecart cart, BlockPos pos) {
-    return TrackUtil.getTrackDirection(level, pos, cart).isSlope()
+    var railShape = TrackUtil.getTrackDirection(level, pos, cart);
+    return railShape.isSlope()
         ? SPEED_SLOPE
-        : speedForNextTrack(level, pos, 0, cart);
+        : speedForNextTrack(level, pos, railShape, null, 0, cart,
+            RailcraftConfig.SERVER.highSpeedTrackMaxSpeed.get());
   }
 
   public static void checkSafetyAndExplode(Level level, BlockPos pos, AbstractMinecart cart) {
@@ -73,15 +76,21 @@ public final class HighSpeedTrackUtil {
         : TrackTypes.IRON.get();
   }
 
-  private static double speedForNextTrack(Level level, BlockPos pos, int dist,
-      @Nullable AbstractMinecart cart) {
-    double maxSpeed = RailcraftConfig.SERVER.highSpeedTrackMaxSpeed.get();
-
+  /**
+   * Looks ahead along the track's own exits for a slope, which caps the speed.
+   *
+   * @param cameFrom - the direction the search arrived from, it isn't searched again
+   */
+  private static double speedForNextTrack(Level level, BlockPos pos, RailShape railShape,
+      @Nullable Direction cameFrom, int dist, @Nullable AbstractMinecart cart, double maxSpeed) {
     if (dist >= LOOK_AHEAD_DIST) {
       return maxSpeed;
     }
 
-    for (var direction : Direction.Plane.HORIZONTAL) {
+    for (var direction : exits(railShape)) {
+      if (direction == cameFrom) {
+        continue;
+      }
       var nextPos = pos.relative(direction);
       var foundTrack = BaseRailBlock.isRail(level, nextPos);
       if (!foundTrack) {
@@ -94,17 +103,31 @@ public final class HighSpeedTrackUtil {
         }
       }
       if (foundTrack) {
-        var railShape = TrackUtil.getTrackDirection(level, nextPos, cart);
-        if (railShape.isSlope()) {
-          return SPEED_SLOPE;
-        }
-        maxSpeed = speedForNextTrack(level, nextPos, dist + 1, cart);
-        if (maxSpeed == SPEED_SLOPE) {
+        var nextShape = TrackUtil.getTrackDirection(level, nextPos, cart);
+        if (nextShape.isSlope()
+            || speedForNextTrack(level, nextPos, nextShape, direction.getOpposite(), dist + 1,
+                cart, maxSpeed) == SPEED_SLOPE) {
           return SPEED_SLOPE;
         }
       }
     }
 
     return maxSpeed;
+  }
+
+  /**
+   * The directions a cart can leave a track with the given shape.
+   */
+  private static Direction[] exits(RailShape railShape) {
+    return switch (railShape) {
+      case NORTH_SOUTH, ASCENDING_NORTH, ASCENDING_SOUTH ->
+          new Direction[] {Direction.NORTH, Direction.SOUTH};
+      case EAST_WEST, ASCENDING_EAST, ASCENDING_WEST ->
+          new Direction[] {Direction.EAST, Direction.WEST};
+      case SOUTH_EAST -> new Direction[] {Direction.SOUTH, Direction.EAST};
+      case SOUTH_WEST -> new Direction[] {Direction.SOUTH, Direction.WEST};
+      case NORTH_WEST -> new Direction[] {Direction.NORTH, Direction.WEST};
+      case NORTH_EAST -> new Direction[] {Direction.NORTH, Direction.EAST};
+    };
   }
 }

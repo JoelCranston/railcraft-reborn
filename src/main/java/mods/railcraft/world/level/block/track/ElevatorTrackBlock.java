@@ -290,7 +290,7 @@ public class ElevatorTrackBlock extends Block {
   }
 
   private float getCartRotation(BlockState state, AbstractMinecart cart) {
-    return state.getValue(FACING).getStepY();
+    return state.getValue(FACING).toYRot();
   }
 
   @SuppressWarnings("deprecation")

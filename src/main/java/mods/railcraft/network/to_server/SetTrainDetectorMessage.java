@@ -7,6 +7,7 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.util.Mth;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 public record SetTrainDetectorMessage(
@@ -27,10 +28,14 @@ public record SetTrainDetectorMessage(
   }
 
   public static void handle(SetTrainDetectorMessage message, IPayloadContext context) {
+    if (!PacketChecks.canEditBlock(context.player(), message.blockPos)) {
+      return;
+    }
     context.player().level()
         .getBlockEntity(message.blockPos, RailcraftBlockEntityTypes.TRAIN_DETECTOR.get())
         .ifPresent(trainDetector -> {
-          trainDetector.setTrainSize(message.trainSize);
+          // Same bounds as the screen
+          trainDetector.setTrainSize(Mth.clamp(message.trainSize, 1, 100));
           trainDetector.setChanged();
         });
   }

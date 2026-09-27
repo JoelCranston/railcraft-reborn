@@ -6,12 +6,10 @@ import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import mods.railcraft.api.signal.SignalAspect;
 import mods.railcraft.api.signal.TokenRing;
 import mods.railcraft.api.signal.TokenSignalEntity;
 import mods.railcraft.util.BoxBuilder;
-import mods.railcraft.util.EntitySearcher;
 import mods.railcraft.util.MathUtil;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -85,12 +83,22 @@ public class SimpleTokenRing implements TokenRing {
         aabbFactory.expandToCoordinate(pos);
       }
       aabbFactory.inflate(16).clampToWorld();
-      this.trackedCarts.retainAll(
-          EntitySearcher.findMinecarts()
-              .in(aabbFactory.build())
-              .stream(this.level)
-              .map(Entity::getUUID)
-              .collect(Collectors.toSet()));
+      var box = aabbFactory.build();
+      // Only carts which are loaded and have left the area are forgotten. A cart in an unloaded
+      // chunk is still in the section, carts which are destroyed are forgotten by cartRemoved.
+      if (this.trackedCarts.removeIf(cartId -> this.level.getEntity(cartId) instanceof Entity cart
+          && !box.intersects(cart.getBoundingBox()))) {
+        this.manager.setDirty();
+      }
+    }
+  }
+
+  /**
+   * Forgets a cart which was removed from the level for good.
+   */
+  public void cartRemoved(UUID cartId) {
+    if (this.trackedCarts.remove(cartId)) {
+      this.manager.setDirty();
     }
   }
 

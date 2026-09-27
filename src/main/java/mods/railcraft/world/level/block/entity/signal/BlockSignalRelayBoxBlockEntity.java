@@ -39,6 +39,9 @@ public class BlockSignalRelayBoxBlockEntity extends ActionSignalBoxBlockEntity
   @Override
   public void onLoad() {
     super.onLoad();
+    if (this.level.isClientSide()) {
+      return;
+    }
     this.signalController.refresh();
     this.blockSignal.refresh();
   }

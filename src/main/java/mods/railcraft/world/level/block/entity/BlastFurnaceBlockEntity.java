@@ -68,7 +68,10 @@ public class BlastFurnaceBlockEntity extends MultiblockBlockEntity<BlastFurnaceB
   public static void serverTick(Level level, BlockPos blockPos, BlockState blockState,
       BlastFurnaceBlockEntity blockEntity) {
     blockEntity.serverTick();
-    blockEntity.moduleDispatcher.serverTick();
+    // Only the master's modules are used
+    if (blockEntity.isMaster()) {
+      blockEntity.moduleDispatcher.serverTick();
+    }
 
     blockEntity.getMasterBlockEntity()
         .ifPresent(master -> {

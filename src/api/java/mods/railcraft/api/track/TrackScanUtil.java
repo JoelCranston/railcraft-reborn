@@ -12,6 +12,11 @@ import net.minecraft.world.level.block.BaseRailBlock;
 
 public final class TrackScanUtil {
 
+  /**
+   * Longest straight section that is scanned, longer sections can't be verified.
+   */
+  public static final int MAX_SCAN_LENGTH = 4096;
+
   private TrackScanUtil() {}
 
   /**
@@ -47,6 +52,8 @@ public final class TrackScanUtil {
     int maxY = Math.max(y1, y2);
     if (x1 != x2 && z1 != z2)
       return new Result(Status.NOT_ALIGNED, minY, maxY);
+    if (Math.abs(x1 - x2) > MAX_SCAN_LENGTH || Math.abs(z1 - z2) > MAX_SCAN_LENGTH)
+      return new Result(Status.UNKNOWN, minY, maxY);
     if (x1 != x2) {
       int min;
       int max;
@@ -63,6 +70,10 @@ public final class TrackScanUtil {
       for (int xx = min; xx <= max; xx++) {
         // if (world.blockExists(xx, yy, z1))
         BlockPos p = new BlockPos(xx, yy, z1);
+        // Checked first, reading the rail would load the chunk
+        if (!level.isLoaded(p)) {
+          return new Result(Status.UNKNOWN, minY, maxY);
+        }
         if (BaseRailBlock.isRail(level, p)) {
           // NOOP
         } else if (BaseRailBlock.isRail(level, p.below())) {
@@ -73,8 +84,6 @@ public final class TrackScanUtil {
           yy++;
           if (yy > maxY)
             maxY = yy;
-        } else if (!level.isLoaded(p)) {
-          return new Result(Status.UNKNOWN, minY, maxY);
         } else
           return new Result(Status.PATH_NOT_FOUND, minY, maxY);
       }
@@ -94,6 +103,10 @@ public final class TrackScanUtil {
       for (int zz = min; zz <= max; zz++) {
         // if (world.blockExists(x1, yy, zz))
         BlockPos p = new BlockPos(x1, yy, zz);
+        // Checked first, reading the rail would load the chunk
+        if (!level.isLoaded(p)) {
+          return new Result(Status.UNKNOWN, minY, maxY);
+        }
         if (BaseRailBlock.isRail(level, p)) {
           // NOOP
         } else if (BaseRailBlock.isRail(level, p.below())) {
@@ -104,8 +117,6 @@ public final class TrackScanUtil {
           yy++;
           if (yy > maxY)
             maxY = yy;
-        } else if (!level.isLoaded(p)) {
-          return new Result(Status.UNKNOWN, minY, maxY);
         } else
           return new Result(Status.PATH_NOT_FOUND, minY, maxY);
       }

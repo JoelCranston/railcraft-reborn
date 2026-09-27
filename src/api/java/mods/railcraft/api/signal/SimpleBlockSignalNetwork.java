@@ -8,6 +8,7 @@ package mods.railcraft.api.signal;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
@@ -33,6 +34,14 @@ public class SimpleBlockSignalNetwork extends BlockEntitySignalNetwork<BlockSign
   private final Set<BlockPos> signalsToRevalidate = new HashSet<>();
 
   private final Map<BlockPos, TrackScanUtil.Result> trackScans = new HashMap<>();
+  /**
+   * Last known track position of each peer, for peers whose chunk isn't loaded.
+   */
+  private final Map<BlockPos, BlockPos> peerTrackPositions = new HashMap<>();
+  /**
+   * Last known aspect of the signals beyond each peer, for peers whose chunk isn't loaded.
+   */
+  private final Map<BlockPos, SignalAspect> remoteAspects = new HashMap<>();
   private final TrackLocator trackLocator;
 
   private int aspectUpdateTimer = 0;
@@ -120,13 +129,54 @@ public class SimpleBlockSignalNetwork extends BlockEntitySignalNetwork<BlockSign
 
   @Override
   public SignalAspect aspectExcluding(BlockPos excludingPos) {
-    return this.stream()
-        .filter(peer -> !peer.asBlockEntity().getBlockPos().equals(excludingPos))
-        .map(this::calculateSignalAspect)
-        .reduce(SignalAspect.GREEN, SignalAspect::mostRestrictive);
+    return this.aspectExcluding(excludingPos, new HashSet<>());
   }
 
-  private SignalAspect calculateSignalAspect(BlockSignalEntity peer) {
+  /**
+   * @param visited - signals already taking part in this calculation, a loop of signals (relay
+   *        boxes) is only walked once
+   */
+  private SignalAspect aspectExcluding(BlockPos excludingPos, Set<BlockPos> visited) {
+    if (!visited.add(this.blockPos())) {
+      return SignalAspect.GREEN;
+    }
+    var aspect = SignalAspect.GREEN;
+    for (var peerPos : this.peers) {
+      if (!peerPos.equals(excludingPos)) {
+        aspect = SignalAspect.mostRestrictive(aspect, this.peerAspect(peerPos, visited));
+      }
+    }
+    return aspect;
+  }
+
+  private SignalAspect peerAspect(BlockPos peerPos, Set<BlockPos> visited) {
+    if (!this.getLevel().isLoaded(peerPos)) {
+      return this.unloadedPeerAspect(peerPos);
+    }
+    return this.peerAt(peerPos)
+        .map(peer -> this.calculateSignalAspect(peer, visited))
+        .orElse(SignalAspect.GREEN);
+  }
+
+  /**
+   * The aspect towards a peer whose chunk isn't loaded, without loading it: carts on our end of
+   * the section are still seen, the signals beyond the peer keep their last known aspect. A peer
+   * which wasn't seen since the level loaded can't be checked at all.
+   */
+  private SignalAspect unloadedPeerAspect(BlockPos peerPos) {
+    var trackPos = this.trackLocator.trackPos();
+    if (trackPos == null) {
+      return SignalAspect.RED;
+    }
+    var otherTrack = this.peerTrackPositions.get(peerPos);
+    if (otherTrack == null) {
+      return SignalAspect.YELLOW;
+    }
+    return SignalAspect.mostRestrictive(this.cartAspect(trackPos, otherTrack),
+        this.remoteAspects.getOrDefault(peerPos, SignalAspect.GREEN));
+  }
+
+  private SignalAspect calculateSignalAspect(BlockSignalEntity peer, Set<BlockPos> visited) {
     var trackPos = this.trackLocator.trackPos();
     if (trackPos == null) {
       return SignalAspect.RED;
@@ -137,6 +187,24 @@ public class SimpleBlockSignalNetwork extends BlockEntitySignalNetwork<BlockSign
       return SignalAspect.YELLOW;
     }
 
+    var peerPos = peer.asBlockEntity().getBlockPos();
+    this.peerTrackPositions.put(peerPos, otherTrack);
+    var aspect = this.cartAspect(trackPos, otherTrack);
+    if (aspect == SignalAspect.RED) {
+      return aspect;
+    }
+
+    var remoteAspect = peer.signalNetwork() instanceof SimpleBlockSignalNetwork network
+        ? network.aspectExcluding(this.blockPos(), visited)
+        : peer.signalNetwork().aspectExcluding(this.blockPos());
+    this.remoteAspects.put(peerPos, remoteAspect);
+    return SignalAspect.mostRestrictive(aspect, remoteAspect);
+  }
+
+  /**
+   * The aspect given by the carts on the track section between our track and the other track.
+   */
+  private SignalAspect cartAspect(BlockPos trackPos, BlockPos otherTrack) {
     var scan = this.getOrCreateTrackScan(otherTrack);
     if (scan == null) {
       return SignalAspect.RED;
@@ -190,8 +258,7 @@ public class SimpleBlockSignalNetwork extends BlockEntitySignalNetwork<BlockSign
       newAspect = SignalAspect.YELLOW;
     }
 
-    return SignalAspect.mostRestrictive(newAspect,
-        peer.signalNetwork().aspectExcluding(this.blockPos()));
+    return newAspect;
   }
 
   private TrackScanUtil.@Nullable Result getOrCreateTrackScan(BlockPos otherTrack) {
@@ -241,10 +308,11 @@ public class SimpleBlockSignalNetwork extends BlockEntitySignalNetwork<BlockSign
       SignalAspect lastAspect = this.signalAspect;
       if (this.hasPeers()) {
         this.signalAspect = SignalAspect.GREEN;
+        var visited = new HashSet<BlockPos>();
+        visited.add(this.blockPos());
         for (var peerPos : this.peers) {
-          this.peerAt(peerPos).ifPresent(peer -> this.signalAspect =
-              SignalAspect.mostRestrictive(this.signalAspect,
-                  this.calculateSignalAspect(peer)));
+          this.signalAspect = SignalAspect.mostRestrictive(this.signalAspect,
+              this.peerAspect(peerPos, visited));
         }
       } else if (this.isLinking()) {
         this.signalAspect = SignalAspect.BLINK_YELLOW;
@@ -259,13 +327,19 @@ public class SimpleBlockSignalNetwork extends BlockEntitySignalNetwork<BlockSign
       this.signalValidationTimer = 0;
       switch (this.trackLocator.trackStatus()) {
         case INVALID -> {
-          this.peers.clear();
+          for (var peerPos : List.copyOf(this.peers)) {
+            this.removePeer(peerPos);
+          }
           LOGGER.debug("Block signal dropped because no track was found near signal @ [{}]",
               this.blockPos());
         }
         case VALID -> {
           this.signalsToRevalidate.retainAll(this.peers());
-          for (var peerPos : this.signalsToRevalidate) {
+          for (var peerPos : List.copyOf(this.signalsToRevalidate)) {
+            if (!this.getLevel().isLoaded(peerPos)) {
+              // Can't be verified without loading its chunk
+              continue;
+            }
             this.peerAt(peerPos).ifPresentOrElse(peer -> {
               var result = this.validateSignal(peer.signalNetwork());
               if (!result.valid) {
@@ -275,19 +349,20 @@ public class SimpleBlockSignalNetwork extends BlockEntitySignalNetwork<BlockSign
                     this.blockPos(), peerPos, result.message);
               }
 
-            }, this.peers::remove);
+            }, () -> this.removePeer(peerPos));
           }
           this.signalsToRevalidate.clear();
 
-          var iterator = this.peers.iterator();
-          while (iterator.hasNext()) {
-            var peerPos = iterator.next();
+          for (var peerPos : List.copyOf(this.peers)) {
+            if (!this.getLevel().isLoaded(peerPos)) {
+              continue;
+            }
             this.peerAt(peerPos).ifPresentOrElse(peer -> {
               var result = this.validateSignal(peer.signalNetwork());
               if (!result.valid) {
                 this.signalsToRevalidate.add(peerPos);
               }
-            }, iterator::remove);
+            }, () -> this.removePeer(peerPos));
           }
         }
         default -> {}

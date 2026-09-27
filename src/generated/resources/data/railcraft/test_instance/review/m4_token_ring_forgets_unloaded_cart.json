@@ -1,0 +1,8 @@
+{
+  "type": "railcraft:review",
+  "environment": "railcraft:default",
+  "max_ticks": 400,
+  "sky_access": true,
+  "structure": "railcraft:test/iron_tank",
+  "test": "m4_token_ring_forgets_unloaded_cart"
+}

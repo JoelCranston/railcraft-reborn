@@ -55,8 +55,10 @@ public final class ChargeSavedData extends SavedData {
   }
 
   public void updateBatteryRecord(ChargeStorageBlockImpl battery) {
-    this.chargeLevels.put(battery.getBlockPos(), battery.getAmountAsInt());
-    this.setDirty();
+    var amount = battery.getAmountAsInt();
+    if (this.chargeLevels.put(battery.getBlockPos(), amount) != amount) {
+      this.setDirty();
+    }
   }
 
   public void removeBattery(BlockPos pos) {

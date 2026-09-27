@@ -28,6 +28,7 @@ import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.phys.AABB;
 
 public abstract class SwitchTrackBlockEntity extends BlockEntity {
 
@@ -64,22 +65,31 @@ public abstract class SwitchTrackBlockEntity extends BlockEntity {
       blockEntity.currentCart = null;
     }
 
+    // One search covering the track and its entrances first. Most of the time no cart is near,
+    // and the four exact searches below can't find anything either.
+    var cartsNearby = !level.getEntitiesOfClass(AbstractMinecart.class,
+        new AABB(blockPos).inflate(1, 0, 1)).isEmpty();
+
     // updating carts we just found in appropriate sets
     // blockEntity keeps exiting carts from getting mixed up with entering carts
-    blockEntity.updateSet(blockEntity.lockingCarts, blockEntity.getCartsAtLockEntrance(),
-        blockEntity.springingCarts, blockEntity.decidingCarts);
-    blockEntity.updateSet(blockEntity.springingCarts, blockEntity.getCartsAtSpringEntrance(),
-        blockEntity.lockingCarts, blockEntity.decidingCarts);
-    blockEntity.updateSet(blockEntity.decidingCarts, blockEntity.getCartsAtDecisionEntrance(),
-        blockEntity.lockingCarts, blockEntity.springingCarts);
+    if (cartsNearby) {
+      blockEntity.updateSet(blockEntity.lockingCarts, blockEntity.getCartsAtLockEntrance(),
+          blockEntity.springingCarts, blockEntity.decidingCarts);
+      blockEntity.updateSet(blockEntity.springingCarts, blockEntity.getCartsAtSpringEntrance(),
+          blockEntity.lockingCarts, blockEntity.decidingCarts);
+      blockEntity.updateSet(blockEntity.decidingCarts, blockEntity.getCartsAtDecisionEntrance(),
+          blockEntity.lockingCarts, blockEntity.springingCarts);
+    }
 
     // We only set sprung/locked when a cart enters our track, blockEntity is
     // mainly for visual purposes as the subclass's getRailDirectionRaw()
     // determines which direction the carts actually take.
-    List<AbstractMinecart> cartsOnTrack = EntitySearcher.findMinecarts()
-        .at(blockPos)
-        .inflate(-0.3f)
-        .list(level);
+    List<AbstractMinecart> cartsOnTrack = cartsNearby
+        ? EntitySearcher.findMinecarts()
+            .at(blockPos)
+            .inflate(-0.3f)
+            .list(level)
+        : List.of();
     Set<UUID> uuidOnTrack = cartsOnTrack.stream()
         .map(Entity::getUUID)
         .collect(Collectors.toSet());

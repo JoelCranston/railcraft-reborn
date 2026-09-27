@@ -1,6 +1,7 @@
 package mods.railcraft.network.to_server;
 
 import java.util.BitSet;
+import java.util.EnumMap;
 import java.util.Map;
 import mods.railcraft.api.core.RailcraftConstants;
 import mods.railcraft.api.signal.SignalAspect;
@@ -9,6 +10,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.world.level.redstone.Redstone;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 public record SetAnalogSignalControllerBoxMessage(
@@ -40,10 +42,17 @@ public record SetAnalogSignalControllerBoxMessage(
   }
 
   public static void handle(SetAnalogSignalControllerBoxMessage message, IPayloadContext context) {
+    if (!PacketChecks.canEditBlock(context.player(), message.blockPos)) {
+      return;
+    }
     context.player().level()
         .getBlockEntity(message.blockPos, RailcraftBlockEntityTypes.ANALOG_SIGNAL_CONTROLLER_BOX.get())
         .ifPresent(signalBox -> {
-          signalBox.setSignalAspectTriggerSignals(message.signalAspectTriggerSignals);
+          // One bit per redstone level
+          var triggerSignals = new EnumMap<SignalAspect, BitSet>(SignalAspect.class);
+          message.signalAspectTriggerSignals.forEach((aspect, bits) ->
+              triggerSignals.put(aspect, bits.get(0, Redstone.SIGNAL_MAX + 1)));
+          signalBox.setSignalAspectTriggerSignals(triggerSignals);
           signalBox.setChanged();
         });
   }

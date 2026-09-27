@@ -30,6 +30,8 @@ import mods.railcraft.data.gametest.instances.launcher_track.LauncherTrackActive
 import mods.railcraft.data.gametest.instances.launcher_track.LauncherTrackPassiveTestInstance;
 import mods.railcraft.data.gametest.instances.one_way_track.OneWayTrackActiveTestInstance;
 import mods.railcraft.data.gametest.instances.one_way_track.OneWayTrackPassiveTestInstance;
+import mods.railcraft.data.gametest.instances.review.ReviewTestInstance;
+import mods.railcraft.data.gametest.instances.review.ReviewTests;
 import mods.railcraft.data.gametest.instances.tank.TankEntityInsideTestInstance;
 import mods.railcraft.data.gametest.instances.tank.TankEntityOutsideTestInstance;
 import mods.railcraft.data.gametest.instances.tank.TankKeepsFluidTestInstance;
@@ -95,6 +97,7 @@ public class RailcraftGameTestInstances {
     deferredRegister.register("tank_entity_inside", () -> TankEntityInsideTestInstance.CODEC);
     deferredRegister.register("tank_entity_outside", () -> TankEntityOutsideTestInstance.CODEC);
     deferredRegister.register("tank_reforms", () -> TankReformsTestInstance.CODEC);
+    deferredRegister.register("review", () -> ReviewTestInstance.CODEC);
   }
 
   public static void bootstrap(BootstrapContext<GameTestInstance> bootstrap) {
@@ -154,6 +157,20 @@ public class RailcraftGameTestInstances {
     registerTestInstance(bootstrap, "tank_entity_inside", "iron_tank", TankEntityInsideTestInstance::new);
     registerTestInstance(bootstrap, "tank_entity_outside", "iron_tank", TankEntityOutsideTestInstance::new);
     registerTestInstance(bootstrap, "tank_reforms", "iron_tank", TankReformsTestInstance::new);
+
+    // Reproductions of review findings. They assert the correct behaviour. Tests of findings which
+    // are still open are optional, so a failure means the finding still reproduces without failing
+    // the build, tests of fixed findings are required.
+    for (var name : ReviewTests.names()) {
+      var data = getDefaultTestData(bootstrap, "iron_tank");
+      bootstrap.register(
+          ResourceKey.create(Registries.TEST_INSTANCE, RailcraftConstants.id("review/" + name)),
+          new ReviewTestInstance(new TestData<>(data.environment(), data.structure(),
+              data.maxTicks(), data.setupTicks(), ReviewTests.isRequired(name), data.rotation(),
+              data.manualOnly(),
+              data.maxAttempts(), data.requiredSuccesses(), data.skyAccess(), data.padding()),
+              name));
+    }
   }
 
   private static <T extends GameTestInstance> void registerTestInstance(

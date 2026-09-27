@@ -11,6 +11,7 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -19,7 +20,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.WeakHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -34,6 +34,8 @@ import com.google.common.collect.ForwardingMap;
 import com.google.common.collect.ForwardingSet;
 import com.google.common.collect.Iterators;
 import com.mojang.logging.LogUtils;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import mods.railcraft.RailcraftConfig;
 import mods.railcraft.api.charge.Charge;
 import mods.railcraft.api.charge.ChargeBlock;
@@ -49,6 +51,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.transfer.transaction.Transaction;
 
@@ -57,10 +60,23 @@ public class ChargeNetworkImpl implements Charge.Network {
   private static final Logger logger = LogUtils.getLogger();
 
   public static final int CHARGE_PER_DAMAGE = 1000;
+  private static final Comparator<ChargeStorage> BATTERY_ORDER =
+      Comparator.comparing(ChargeStorage::getState)
+          .thenComparing(Comparator.comparing(ChargeStorage::getEfficiency).reversed());
   private static final Map<ChargeBlock.ConnectType, ConnectionMap> CONNECTION_MAPS =
       new EnumMap<>(ChargeBlock.ConnectType.class);
   private final ChargeGrid NULL_GRID = new NullGrid();
   private final Map<BlockPos, ChargeNode> nodes = new HashMap<>();
+  /**
+   * The positions of {@link #nodes} by chunk, so a chunk's nodes can be dropped when it unloads.
+   */
+  private final Long2ObjectMap<Set<BlockPos>> nodesByChunk = new Long2ObjectOpenHashMap<>();
+  /**
+   * Positions of nodes which were dropped because their chunk unloaded, by chunk. They are
+   * registered again once their chunk is loaded again.
+   */
+  private final Long2ObjectMap<Set<BlockPos>> unloadedNodes = new Long2ObjectOpenHashMap<>();
+  private final Set<BlockPos> reloadedNodes = new LinkedHashSet<>();
   private final Map<BlockPos, ChargeNode> queue = new LinkedHashMap<>();
   private final Set<ChargeNode> tickingNodes = new LinkedHashSet<>();
   private final Set<ChargeGrid> grids = Collections.newSetFromMap(new WeakHashMap<>());
@@ -78,6 +94,14 @@ public class ChargeNetworkImpl implements Charge.Network {
   public void tick() {
     this.tickingNodes.removeIf(ChargeNode::checkUsageRecordingCompletion);
 
+    // Register the nodes of chunks which were loaded again
+    for (var pos : this.reloadedNodes) {
+      if (this.level.isLoaded(pos)) {
+        this.addNode(pos, this.level.getBlockState(pos));
+      }
+    }
+    this.reloadedNodes.clear();
+
     // Process the queue of nodes waiting to be added/removed from the network
     Set<BlockPos> added = new HashSet<>();
     Iterator<Map.Entry<BlockPos, ChargeNode>> iterator = queue.entrySet().iterator();
@@ -87,6 +111,8 @@ public class ChargeNetworkImpl implements Charge.Network {
       Map.Entry<BlockPos, ChargeNode> action = iterator.next();
       if (action.getValue() == null) {
         removeNodeImpl(action.getKey());
+      } else if (!this.level.isLoaded(action.getKey())) {
+        // Unloaded since it was queued, it's registered again when its chunk loads
       } else {
         addNodeImpl(action.getKey(), action.getValue());
         added.add(action.getKey());
@@ -112,11 +138,18 @@ public class ChargeNetworkImpl implements Charge.Network {
   }
 
   private void forConnections(BlockPos pos, BiConsumer<BlockPos, BlockState> action) {
+    // Discovery never loads chunks, nodes in unloaded chunks are found once they load
+    if (!this.level.isLoaded(pos)) {
+      return;
+    }
     var state = this.level.getBlockState(pos);
     var chargeSpec = this.getChargeSpec(state, pos);
     if (chargeSpec != null) {
       CONNECTION_MAPS.get(chargeSpec.connectType()).forEach((k, v) -> {
         var otherPos = pos.offset(k);
+        if (!this.level.isLoaded(otherPos)) {
+          return;
+        }
         var otherState = this.level.getBlockState(otherPos);
         var other = this.getChargeSpec(otherState, otherPos);
         if (other != null && CONNECTION_MAPS.get(other.connectType()).get(pos.subtract(otherPos))
@@ -134,7 +167,9 @@ public class ChargeNetworkImpl implements Charge.Network {
     if (!this.needsNode(pos, node.chargeSpec))
       return;
 
-    var oldNode = this.nodes.put(pos.immutable(), node);
+    pos = pos.immutable();
+    var oldNode = this.nodes.put(pos, node);
+    this.nodesByChunk.computeIfAbsent(ChunkPos.pack(pos), __ -> new HashSet<>()).add(pos);
 
     // update the battery in the save data tracker
     if (node.chargeBattery != null) {
@@ -148,7 +183,7 @@ public class ChargeNetworkImpl implements Charge.Network {
       oldNode.invalid = true;
       if (oldNode.chargeGrid.isActive()) {
         node.chargeGrid = oldNode.chargeGrid;
-        node.chargeGrid.add(node);
+        node.chargeGrid.replace(oldNode, node);
       }
       oldNode.chargeGrid = NULL_GRID;
     }
@@ -159,12 +194,70 @@ public class ChargeNetworkImpl implements Charge.Network {
   }
 
   private void removeNodeImpl(BlockPos pos) {
-    var chargeNode = this.nodes.remove(pos);
+    var chargeNode = this.removeFromNodes(pos);
     if (chargeNode != null) {
       chargeNode.invalid = true;
       chargeNode.chargeGrid.destroy(true);
+      // Rebuild what's left of the grid right away, consumers use the node's grid as it is
+      chargeNode.forConnections(ChargeNode::getGrid);
     }
     this.chargeSavedData.removeBattery(pos);
+  }
+
+  @Nullable
+  private ChargeNode removeFromNodes(BlockPos pos) {
+    var chargeNode = this.nodes.remove(pos);
+    if (chargeNode != null) {
+      var chunkKey = ChunkPos.pack(pos);
+      var chunkNodes = this.nodesByChunk.get(chunkKey);
+      if (chunkNodes != null && chunkNodes.remove(pos) && chunkNodes.isEmpty()) {
+        this.nodesByChunk.remove(chunkKey);
+      }
+    }
+    return chargeNode;
+  }
+
+  /**
+   * Drops the nodes of a chunk which unloaded, so their grids stop ticking them. Their charge is
+   * kept in the saved data and they are registered again when the chunk loads again.
+   */
+  public void chunkUnloaded(ChunkPos chunkPos) {
+    var chunkNodes = this.nodesByChunk.remove(chunkPos.pack());
+    if (chunkNodes == null) {
+      return;
+    }
+    Set<ChargeGrid> affectedGrids = Collections.newSetFromMap(new IdentityHashMap<>());
+    List<ChargeNode> remaining = new ArrayList<>();
+    for (var pos : chunkNodes) {
+      var chargeNode = this.nodes.remove(pos);
+      if (chargeNode == null) {
+        continue;
+      }
+      chargeNode.invalid = true;
+      if (chargeNode.chargeBattery != null) {
+        this.chargeSavedData.updateBatteryRecord(chargeNode.chargeBattery);
+      }
+      if (affectedGrids.add(chargeNode.chargeGrid)) {
+        remaining.addAll(chargeNode.chargeGrid);
+      }
+    }
+    this.unloadedNodes.computeIfAbsent(chunkPos.pack(), __ -> new HashSet<>()).addAll(chunkNodes);
+    affectedGrids.forEach(grid -> grid.destroy(true));
+    for (var chargeNode : remaining) {
+      if (chargeNode.isValid()) {
+        chargeNode.getGrid();
+      }
+    }
+  }
+
+  /**
+   * Registers the nodes of a chunk which was loaded again.
+   */
+  public void chunkLoaded(ChunkPos chunkPos) {
+    var chunkNodes = this.unloadedNodes.remove(chunkPos.pack());
+    if (chunkNodes != null) {
+      this.reloadedNodes.addAll(chunkNodes);
+    }
   }
 
   @Override
@@ -207,7 +300,7 @@ public class ChargeNetworkImpl implements Charge.Network {
       this.removeNodeImpl(pos);
       node = null;
     }
-    if (node == null) {
+    if (node == null && this.level.isLoaded(pos)) {
       var state = this.level.getBlockState(pos);
       var chargeSpec = this.getChargeSpec(state, pos);
       if (chargeSpec != null) {
@@ -222,6 +315,7 @@ public class ChargeNetworkImpl implements Charge.Network {
   public class ChargeGrid extends ForwardingSet<ChargeNode> {
     private final Set<ChargeNode> chargeNodes = new HashSet<>();
     private final List<ChargeStorageBlockImpl> batteries = new ArrayList<>();
+    private final Set<BlockPos> batteryPositions = new HashSet<>();
     private boolean invalid;
     private float totalLosses;
     private int chargeUsedThisTick;
@@ -234,6 +328,14 @@ public class ChargeNetworkImpl implements Charge.Network {
 
     @Override
     public boolean add(ChargeNode chargeNode) {
+      var added = this.addWithoutSorting(chargeNode);
+      if (chargeNode.chargeBattery != null) {
+        this.sortBatteries();
+      }
+      return added;
+    }
+
+    private boolean addWithoutSorting(ChargeNode chargeNode) {
       if (!chargeNode.isValid()) {
         return false;
       }
@@ -243,25 +345,41 @@ public class ChargeNetworkImpl implements Charge.Network {
         totalLosses += chargeNode.chargeSpec.losses();
       }
       chargeNode.chargeGrid = this;
-      this.batteries.removeIf(b -> b.getBlockPos().equals(chargeNode.pos));
-      if (chargeNode.chargeBattery != null) {
+      if (this.batteryPositions.remove(chargeNode.pos)) {
         this.batteries.removeIf(b -> b.getBlockPos().equals(chargeNode.pos));
+      }
+      if (chargeNode.chargeBattery != null) {
         this.batteries.add(chargeNode.chargeBattery);
-        sortBatteries();
+        this.batteryPositions.add(chargeNode.pos);
       } else {
         ChargeNetworkImpl.this.chargeSavedData.removeBattery(chargeNode.pos);
       }
       return added;
     }
 
+    /**
+     * Replaces a node with a new node at the same position, e.g. a battery replaced by a different
+     * kind of battery.
+     */
+    private void replace(ChargeNode oldNode, ChargeNode newNode) {
+      if (this.chargeNodes.remove(oldNode)) {
+        this.totalLosses -= oldNode.chargeSpec.losses();
+      }
+      this.add(newNode);
+    }
+
     private void sortBatteries() {
-      this.batteries.sort(Comparator.comparing(ChargeStorage::getState)
-          .thenComparing(Comparator.comparing(ChargeStorage::getEfficiency).reversed()));
+      this.batteries.sort(BATTERY_ORDER);
     }
 
     @Override
     public boolean addAll(Collection<? extends ChargeNode> collection) {
-      return standardAddAll(collection);
+      var changed = false;
+      for (var chargeNode : collection) {
+        changed |= this.addWithoutSorting(chargeNode);
+      }
+      this.sortBatteries();
+      return changed;
     }
 
     @Override
@@ -297,6 +415,7 @@ public class ChargeNetworkImpl implements Charge.Network {
         forEach(n -> n.chargeGrid = NULL_GRID);
       }
       batteries.clear();
+      batteryPositions.clear();
       chargeNodes.clear();
       grids.remove(this);
     }
@@ -462,7 +581,7 @@ public class ChargeNetworkImpl implements Charge.Network {
       int totalExtracted = 0;
       for (var battery : batteries) {
         try (var tx = Transaction.openRoot()) {
-          totalExtracted += battery.extract(desiredAmount, tx);
+          totalExtracted += battery.extract(desiredAmount - totalExtracted, tx);
           if (!simulate) {
             tx.commit();
           }
@@ -640,8 +759,8 @@ public class ChargeNetworkImpl implements Charge.Network {
       }
       Deque<ChargeNode> nodeQueue = new ArrayDeque<>();
       nodeQueue.add(this);
-      TreeSet<ChargeGrid> seenGrids =
-          new TreeSet<>(Comparator.comparingInt(ForwardingCollection::size));
+      // Grids are compared by identity, two grids of the same size are still different grids
+      Set<ChargeGrid> seenGrids = Collections.newSetFromMap(new IdentityHashMap<>());
       seenGrids.add(this.chargeGrid);
       ChargeNode nextNode;
       while ((nextNode = nodeQueue.poll()) != null) {
@@ -659,7 +778,10 @@ public class ChargeNetworkImpl implements Charge.Network {
           }
         });
       }
-      this.chargeGrid = Objects.requireNonNull(seenGrids.pollLast());
+      this.chargeGrid = seenGrids.stream()
+          .max(Comparator.comparingInt(ForwardingCollection::size))
+          .orElseThrow();
+      seenGrids.remove(this.chargeGrid);
       if (this.chargeGrid.isNull()) {
         this.chargeGrid = new ChargeGrid();
         ChargeNetworkImpl.this.grids.add(this.chargeGrid);

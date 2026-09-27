@@ -1,5 +1,6 @@
 package mods.railcraft.charge;
 
+import org.jspecify.annotations.Nullable;
 import it.unimi.dsi.fastutil.objects.Reference2ReferenceOpenHashMap;
 import mods.railcraft.api.charge.Charge;
 import net.minecraft.server.level.ServerLevel;
@@ -24,6 +25,14 @@ public enum ChargeProviderImpl implements Charge.Provider {
   @Override
   public ChargeNetworkImpl network(ServerLevel level) {
     return this.networks.computeIfAbsent(level, __ -> new ChargeNetworkImpl(this.charge, level));
+  }
+
+  /**
+   * The network of the level, if one was created already.
+   */
+  @Nullable
+  public ChargeNetworkImpl existingNetwork(ServerLevel level) {
+    return this.networks.get(level);
   }
 
   public void removeChargeNetwork(ServerLevel level) {

@@ -12,7 +12,7 @@ public class NameCondition {
   public static Expression parse(String line) throws RoutingLogicException {
     var statement = RoutingStatementParser.parse(KEYWORD, true, line);
     Predicate<String> predicate = statement.isRegex()
-        ? statement.pattern().asMatchPredicate()
+        ? statement::matches
         : statement.value()::equalsIgnoreCase;
     return (router, rollingStock) -> rollingStock.entity().hasCustomName()
         ? predicate.test(rollingStock.entity().getCustomName().getString())

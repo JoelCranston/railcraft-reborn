@@ -83,6 +83,13 @@ public class TokenRingManager extends SavedData {
     }
   }
 
+  /**
+   * Forgets a cart which was removed from the level for good (not unloaded).
+   */
+  public void cartRemoved(UUID cartId) {
+    this.tokenRings.values().forEach(tokenRing -> tokenRing.cartRemoved(cartId));
+  }
+
   public SimpleTokenRing getTokenRingNetwork(UUID id, BlockPos origin) {
     return this.tokenRings.computeIfAbsent(id,
         __ -> new SimpleTokenRing(this.level, this, id, origin));

@@ -46,6 +46,11 @@ public class RollingStockImpl implements RollingStock, ValueIOSerializable {
 
   private static final Logger LOGGER = LogUtils.getLogger();
 
+  /**
+   * Incremented whenever any link changes, invalidates every cached {@link #cachedFront}.
+   */
+  private static long linkEpoch;
+
   private final AbstractMinecart minecart;
 
   @Nullable
@@ -72,6 +77,14 @@ public class RollingStockImpl implements RollingStock, ValueIOSerializable {
   private int primaryLinkTimeoutTicks;
   private int secondaryLinkTimeoutTicks;
 
+  /**
+   * The front of this cart's train, valid while {@link #cachedFrontEpoch} is the current
+   * {@link #linkEpoch}.
+   */
+  @Nullable
+  private RollingStock cachedFront;
+  private long cachedFrontEpoch = -1;
+
   public RollingStockImpl(IAttachmentHolder holder) {
     if (!(holder instanceof AbstractMinecart minecart)) {
       throw new IllegalArgumentException("holder must be instance of AbstractMinecart.");
@@ -96,45 +109,72 @@ public class RollingStockImpl implements RollingStock, ValueIOSerializable {
     });
   }
 
+  private static void linksChanged() {
+    linkEpoch++;
+  }
+
   private void setLink(Side side, @Nullable RollingStock minecart) {
+    // A live link replaces whatever link was still waiting to be resolved on that side
     switch (side) {
-      case FRONT -> this.frontLink = minecart;
-      case BACK -> this.backLink = minecart;
+      case FRONT -> {
+        this.frontLink = minecart;
+        this.unresolvedFrontLink = null;
+      }
+      case BACK -> {
+        this.backLink = minecart;
+        this.unresolvedBackLink = null;
+      }
     }
+    linksChanged();
   }
 
   private void resolveLinks() {
     if (this.unresolvedBackLink != null) {
-      this.resolveLink(this.unresolvedBackLink)
-          .ifPresent(cart -> {
-            this.backLink = cart;
-            this.unresolvedBackLink = null;
-          });
+      this.resolveLink(Side.BACK, this.unresolvedBackLink);
     }
 
     if (this.unresolvedFrontLink != null) {
-      this.resolveLink(this.unresolvedFrontLink)
-          .ifPresent(cart -> {
-            this.frontLink = cart;
-            this.unresolvedFrontLink = null;
-          });
+      this.resolveLink(Side.FRONT, this.unresolvedFrontLink);
     }
   }
 
-  private Optional<RollingStock> resolveLink(UUID minecartId) {
+  /**
+   * Resolves a link loaded from disk once the linked cart is loaded. A link to a cart which
+   * doesn't link back to us is dropped, so it isn't retried (and logged) forever.
+   */
+  private void resolveLink(Side side, UUID minecartId) {
     var level = (ServerLevel) this.minecart.level();
-    var entity = level.getEntity(minecartId);
-    return entity instanceof AbstractMinecart minecart
-        ? Optional.ofNullable(minecart.getCapability(CAPABILITY))
-            .filter(cart -> {
-              var result = cart.isLinkedWith(this);
-              if (!result) {
-                LOGGER.warn("Link mismatch between {} and {} (link was missing on {})",
-                    this.minecart, cart.entity(), cart.entity());
-              }
-              return result;
-            })
-        : Optional.empty();
+    if (!(level.getEntity(minecartId) instanceof AbstractMinecart minecart)) {
+      return;
+    }
+    var cart = minecart.getCapability(CAPABILITY);
+    if (cart == null) {
+      return;
+    }
+    if (cart.isLinkedWith(this)) {
+      this.setLink(side, cart);
+    } else {
+      LOGGER.warn("Link mismatch between {} and {} (link was missing on {}), dropping it",
+          this.minecart, cart.entity(), cart.entity());
+      this.setLink(side, null);
+    }
+  }
+
+  /**
+   * Invoked when a linked cart is unloaded while this cart stays loaded. The link is kept as an
+   * unresolved link, so it resolves to the new instance of the cart once it is loaded again.
+   */
+  private void partnerUnloaded(RollingStockImpl partner) {
+    if (this.frontLink == partner) {
+      this.frontLink = null;
+      this.unresolvedFrontLink = partner.entity().getUUID();
+      linksChanged();
+    }
+    if (this.backLink == partner) {
+      this.backLink = null;
+      this.unresolvedBackLink = partner.entity().getUUID();
+      linksChanged();
+    }
   }
 
   @Override
@@ -143,15 +183,13 @@ public class RollingStockImpl implements RollingStock, ValueIOSerializable {
 
     if (this.unresolvedBackLink != null
         && rollingStock.entity().getUUID().equals(this.unresolvedBackLink)) {
-      this.unresolvedBackLink = null;
-      this.backLink = rollingStock;
+      this.setLink(Side.BACK, rollingStock);
       return Optional.of(Side.BACK);
     }
 
     if (this.unresolvedFrontLink != null
         && rollingStock.entity().getUUID().equals(this.unresolvedFrontLink)) {
-      this.unresolvedFrontLink = null;
-      this.frontLink = rollingStock;
+      this.setLink(Side.FRONT, rollingStock);
       return Optional.of(Side.FRONT);
     }
 
@@ -275,6 +313,7 @@ public class RollingStockImpl implements RollingStock, ValueIOSerializable {
     var oldFront = this.frontLink;
     this.frontLink = this.backLink;
     this.backLink = oldFront;
+    linksChanged();
     return true;
   }
 
@@ -406,13 +445,47 @@ public class RollingStockImpl implements RollingStock, ValueIOSerializable {
   @Nullable
   @Override
   public Train train() {
-    return this.validateTrainOwnership() ? this.train : this.frontLink.train();
+    return this.validateTrainOwnership() ? this.train : this.front().train();
+  }
+
+  /**
+   * The front of this cart's train. Cached until any link changes, looking it up walks the whole
+   * train.
+   */
+  private RollingStock front() {
+    if (this.cachedFront != null && this.cachedFrontEpoch == linkEpoch
+        && !this.cachedFront.entity().isRemoved()) {
+      return this.cachedFront;
+    }
+    RollingStock front = Objects.requireNonNull(this.frontLink);
+    while (true) {
+      if (front instanceof RollingStockImpl impl) {
+        impl.validateTrainOwnership();
+      }
+      var next = front.linkAt(Side.FRONT).orElse(null);
+      if (next == null || next == this) {
+        break;
+      }
+      front = next;
+    }
+    this.cachedFront = front;
+    this.cachedFrontEpoch = linkEpoch;
+    return front;
   }
 
   @Override
   public void removed(Entity.RemovalReason reason) {
     if (reason.shouldDestroy()) {
       this.unlinkAll();
+    } else if (reason == Entity.RemovalReason.UNLOADED_TO_CHUNK
+        || reason == Entity.RemovalReason.UNLOADED_WITH_PLAYER) {
+      // Partners which stay loaded link to our new instance once we're loaded again
+      if (this.frontLink instanceof RollingStockImpl partner) {
+        partner.partnerUnloaded(this);
+      }
+      if (this.backLink instanceof RollingStockImpl partner) {
+        partner.partnerUnloaded(this);
+      }
     }
   }
 
@@ -678,16 +751,16 @@ public class RollingStockImpl implements RollingStock, ValueIOSerializable {
       this.train.serialize(valueOutput.child(CompoundTagKeys.TRAIN));
     }
 
-    if (this.unresolvedBackLink != null) {
-      valueOutput.store(CompoundTagKeys.BACK_LINK, UUIDUtil.CODEC, this.unresolvedBackLink);
-    } else if (this.backLink != null) {
+    if (this.backLink != null) {
       valueOutput.store(CompoundTagKeys.BACK_LINK, UUIDUtil.CODEC, this.backLink.entity().getUUID());
+    } else if (this.unresolvedBackLink != null) {
+      valueOutput.store(CompoundTagKeys.BACK_LINK, UUIDUtil.CODEC, this.unresolvedBackLink);
     }
 
-    if (this.unresolvedFrontLink != null) {
-      valueOutput.store(CompoundTagKeys.FRONT_LINK, UUIDUtil.CODEC, this.unresolvedFrontLink);
-    } else if (this.frontLink != null) {
+    if (this.frontLink != null) {
       valueOutput.store(CompoundTagKeys.FRONT_LINK, UUIDUtil.CODEC, this.frontLink.entity().getUUID());
+    } else if (this.unresolvedFrontLink != null) {
+      valueOutput.store(CompoundTagKeys.FRONT_LINK, UUIDUtil.CODEC, this.unresolvedFrontLink);
     }
 
     valueOutput.putBoolean(CompoundTagKeys.BACK_AUTO_LINK_ENABLED, this.backAutoLinkEnabled);
@@ -710,6 +783,7 @@ public class RollingStockImpl implements RollingStock, ValueIOSerializable {
 
     this.unresolvedBackLink = valueInput.read(CompoundTagKeys.BACK_LINK, UUIDUtil.CODEC).orElse(null);
     this.unresolvedFrontLink = valueInput.read(CompoundTagKeys.FRONT_LINK, UUIDUtil.CODEC).orElse(null);
+    linksChanged();
 
     this.backAutoLinkEnabled = valueInput.getBooleanOr(CompoundTagKeys.BACK_AUTO_LINK_ENABLED, false);
     this.frontAutoLinkEnabled = valueInput.getBooleanOr(CompoundTagKeys.FRONT_AUTO_LINK_ENABLED, false);

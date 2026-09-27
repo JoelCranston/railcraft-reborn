@@ -33,6 +33,7 @@ import net.neoforged.neoforge.transfer.transaction.Transaction;
 public class SteamLocomotive extends BaseSteamLocomotive implements WorldlyContainer {
 
   private static final int FUEL_SLOT = 3;
+  private static final int RESTOCK_INTERVAL_TICKS = 8;
   private static final int EXTRA_FUEL_SLOT_A = 4;
   private static final int EXTRA_FUEL_SLOT_B = 5;
   private static final int EXTRA_FUEL_SLOT_C = 6;
@@ -83,14 +84,26 @@ public class SteamLocomotive extends BaseSteamLocomotive implements WorldlyConta
     super.serverTick(level);
     this.extraFuelContainer.moveOneItemTo(this.fuelContainer);
 
+    // Pulling searches every cart of the train, so it only happens every few ticks. Water is
+    // pulled at the same rate per tick as before, just in bigger batches.
+    if (this.tickCount % RESTOCK_INTERVAL_TICKS != 0) {
+      return;
+    }
+
     var rollingStock = RollingStock.getOrThrow(this);
-    var pulledFuel = rollingStock.pullItem(this.extraFuelContainer::canFit);
-    if (!pulledFuel.isEmpty()) {
-      this.extraFuelContainer.insert(pulledFuel);
+    // Skip the search when no slot can take another item
+    if (this.extraFuelContainer.stream().anyMatch(slot -> !slot.hasItem()
+        || slot.item().getCount() < slot.item().getMaxStackSize())) {
+      var pulledFuel = rollingStock.pullItem(this.extraFuelContainer::canFit);
+      if (!pulledFuel.isEmpty()) {
+        this.extraFuelContainer.insert(pulledFuel);
+      }
     }
     if (this.isSafeToFill() && this.waterTank.getFluidAmount() < this.waterTank.getCapacity() / 2) {
-      var pulledWater = rollingStock.pullFluid(
-          new FluidStack(Fluids.WATER, RailcraftConfig.SERVER.tankCartFluidTransferRate.get()));
+      var amount = Math.min(
+          RailcraftConfig.SERVER.tankCartFluidTransferRate.get() * RESTOCK_INTERVAL_TICKS,
+          this.waterTank.getRemainingSpace());
+      var pulledWater = rollingStock.pullFluid(new FluidStack(Fluids.WATER, amount));
       if (!pulledWater.isEmpty()) {
         try (var tx = Transaction.openRoot()){
           this.waterTank.insert(FluidResource.of(pulledWater), pulledWater.getAmount(), tx);

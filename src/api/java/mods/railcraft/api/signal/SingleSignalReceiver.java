@@ -142,11 +142,12 @@ public class SingleSignalReceiver
 
     @Nullable
     protected SignalController getSignalController() {
-      if (this.signalControllerPos == null) {
+      var level = SingleSignalReceiver.this.blockEntity.getLevel();
+      if (this.signalControllerPos == null || !level.isLoaded(this.signalControllerPos)) {
+        // Never load the controller's chunk
         return null;
       }
-      var blockEntity =
-          SingleSignalReceiver.this.blockEntity.getLevel().getBlockEntity(this.signalControllerPos);
+      var blockEntity = level.getBlockEntity(this.signalControllerPos);
       if (blockEntity instanceof SignalControllerEntity provider) {
         return provider.getSignalController();
       } else {

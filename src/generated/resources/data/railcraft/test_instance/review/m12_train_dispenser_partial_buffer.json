@@ -1,0 +1,8 @@
+{
+  "type": "railcraft:review",
+  "environment": "railcraft:default",
+  "max_ticks": 400,
+  "sky_access": true,
+  "structure": "railcraft:test/iron_tank",
+  "test": "m12_train_dispenser_partial_buffer"
+}

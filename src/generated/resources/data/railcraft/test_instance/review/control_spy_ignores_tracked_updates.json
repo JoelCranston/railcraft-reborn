@@ -1,0 +1,9 @@
+{
+  "type": "railcraft:review",
+  "environment": "railcraft:default",
+  "max_ticks": 400,
+  "required": false,
+  "sky_access": true,
+  "structure": "railcraft:test/iron_tank",
+  "test": "control_spy_ignores_tracked_updates"
+}

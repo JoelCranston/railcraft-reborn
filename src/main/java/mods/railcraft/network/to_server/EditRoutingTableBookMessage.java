@@ -24,8 +24,11 @@ public record EditRoutingTableBookMessage(
   public static final StreamCodec<FriendlyByteBuf, EditRoutingTableBookMessage> STREAM_CODEC =
       StreamCodec.composite(
           NeoForgeStreamCodecs.enumCodec(InteractionHand.class), EditRoutingTableBookMessage::hand,
-          ByteBufCodecs.STRING_UTF8.apply(ByteBufCodecs.list()), EditRoutingTableBookMessage::pages,
-          ByteBufCodecs.optional(ByteBufCodecs.STRING_UTF8), EditRoutingTableBookMessage::title,
+          ByteBufCodecs.stringUtf8(RoutingTableBookContent.PAGE_EDIT_LENGTH)
+              .apply(ByteBufCodecs.list(RoutingTableBookContent.MAX_PAGES)),
+          EditRoutingTableBookMessage::pages,
+          ByteBufCodecs.optional(ByteBufCodecs.stringUtf8(RoutingTableBookContent.MAX_TITLE_LENGTH)),
+          EditRoutingTableBookMessage::title,
           EditRoutingTableBookMessage::new);
 
   @Override
@@ -37,9 +40,20 @@ public record EditRoutingTableBookMessage(
     var player = context.player();
     var senderProfile = player.getGameProfile();
     var itemStack = player.getItemInHand(message.hand);
+    if (!isValid(message)) {
+      return;
+    }
     if (itemStack.getItem() instanceof RoutingTableBookItem) {
       itemStack.set(RailcraftDataComponents.ROUTING_TABLE_BOOK,
           new RoutingTableBookContent(message.pages, senderProfile.name(), message.title));
     }
+  }
+
+  private static boolean isValid(EditRoutingTableBookMessage message) {
+    return message.pages.size() <= RoutingTableBookContent.MAX_PAGES
+        && message.pages.stream()
+            .allMatch(page -> page.length() <= RoutingTableBookContent.PAGE_EDIT_LENGTH)
+        && message.title.map(title -> title.length() <= RoutingTableBookContent.MAX_TITLE_LENGTH)
+            .orElse(true);
   }
 }

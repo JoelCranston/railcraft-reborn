@@ -48,7 +48,13 @@ public abstract class TankBlockEntity extends MultiblockBlockEntity<TankBlockEnt
 
   private final TankModule module;
 
+  private static final int SYNC_INTERVAL_TICKS = 10;
+
   private int lastLight = -1;
+
+  private boolean syncPending;
+
+  private long lastSyncTime;
 
   private int maxX;
   private int maxY;
@@ -68,14 +74,33 @@ public abstract class TankBlockEntity extends MultiblockBlockEntity<TankBlockEnt
   @Override
   protected void serverTick() {
     super.serverTick();
+    if (this.syncPending
+        && this.level.getGameTime() - this.lastSyncTime >= SYNC_INTERVAL_TICKS) {
+      this.syncPending = false;
+      this.lastSyncTime = this.level.getGameTime();
+      this.syncToClient();
+    }
     if (this.fluidHandler != null) {
       var neighbors = FluidTools.findNeighbors(this.getLevel(), this.getBlockPos(),
           blockEntity -> !(blockEntity instanceof TankBlockEntity tank)
-              || !tank.getMembership().equals(this.getMembership()),
+              || !tank.getMasterBlockEntity().equals(this.getMasterBlockEntity()),
           Direction.DOWN, Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST);
       for (var neighbor : neighbors) {
         ResourceHandlerUtil.move(this.fluidHandler, neighbor, Predicates.alwaysTrue(), FLOW_RATE, null);
       }
+    }
+  }
+
+  @Override
+  protected boolean needsTicking() {
+    return super.needsTicking() || this.syncPending;
+  }
+
+  @Override
+  protected void dynamicTick() {
+    this.serverTick();
+    if (this.isMaster()) {
+      this.moduleDispatcher.serverTick();
     }
   }
 
@@ -92,7 +117,9 @@ public abstract class TankBlockEntity extends MultiblockBlockEntity<TankBlockEnt
     }
 
     this.setChanged();
-    this.syncToClient();
+    // Fluid changes every tick while pumping, sync them at most every SYNC_INTERVAL_TICKS
+    this.syncPending = true;
+    this.ensureTicking();
 
     var fluidStack = this.module.getTank().getFluidStack();
     var fluidType = this.module.getTank().getFluidType();

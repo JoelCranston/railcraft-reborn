@@ -52,7 +52,8 @@ public class SignalCapacitorBoxBlockEntity extends AbstractSignalBoxBlockEntity 
 
   public static void serverTick(Level level, BlockPos blockPos, BlockState blockState,
       SignalCapacitorBoxBlockEntity blockEntity) {
-    if (blockEntity.ticksPowered-- > 0) {
+    if (blockEntity.ticksPowered > 0) {
+      blockEntity.ticksPowered--;
       if (blockEntity.mode == Mode.FALLING_EDGE) {
         var signalAspect = SignalAspect.GREEN;
         var powered = RedstoneUtil.hasRepeaterSignal(level, blockPos);

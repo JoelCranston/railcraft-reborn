@@ -57,6 +57,7 @@ import mods.railcraft.world.entity.vehicle.MinecartHandler;
 import mods.railcraft.world.inventory.RailcraftMenuTypes;
 import mods.railcraft.world.item.ChargeMeterItem;
 import mods.railcraft.world.item.CrowbarHandler;
+import mods.railcraft.world.item.GogglesItem;
 import mods.railcraft.world.item.RailcraftCreativeModeTabs;
 import mods.railcraft.world.item.RailcraftItems;
 import mods.railcraft.world.item.component.RailcraftDataComponents;
@@ -100,6 +101,8 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.vehicle.minecart.AbstractMinecart;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.ItemStack;
@@ -122,7 +125,7 @@ import net.neoforged.neoforge.event.OnDatapackSyncEvent;
 import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDropsEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
-import net.neoforged.neoforge.event.level.BlockEvent;
+import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.level.LevelEvent;
 import net.neoforged.neoforge.event.server.ServerAboutToStartEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
@@ -362,13 +365,15 @@ public class Railcraft {
         provider.network(level).tick();
       }
       TokenRingManager.get(level).tick(level);
+      WorldSpikeBlockEntity.RailcraftValidationTicket.tick(level);
     }
   }
 
   @SubscribeEvent
   public void handlePlayerTick(PlayerTickEvent.Post event) {
     if (event.getEntity() instanceof ServerPlayer player
-        && player.tickCount % SharedConstants.TICKS_PER_SECOND == 0) {
+        && player.tickCount % SharedConstants.TICKS_PER_SECOND == 0
+        && isWearingShuntingGoggles(player)) {
       var linkedCarts = EntitySearcher.findMinecarts()
           .around(player)
           .inflate(32F)
@@ -378,6 +383,15 @@ public class Railcraft {
           .toList();
       PacketDistributor.sendToPlayer(player, new LinkedCartsMessage(linkedCarts));
     }
+  }
+
+  /**
+   * Linked carts are only rendered while wearing goggles with the shunting aura.
+   */
+  private static boolean isWearingShuntingGoggles(ServerPlayer player) {
+    var goggles = player.getItemBySlot(EquipmentSlot.HEAD);
+    return goggles.getItem() instanceof GogglesItem
+        && GogglesItem.getAura(goggles) == GogglesItem.Aura.SHUNTING;
   }
 
   @SubscribeEvent
@@ -413,8 +427,37 @@ public class Railcraft {
   @SubscribeEvent
   public void handleEntityLeaveWorld(EntityLeaveLevelEvent event) {
     if (event.getEntity() instanceof AbstractMinecart cart
-        && !cart.level().isClientSide() && cart.isRemoved()) {
-      RollingStock.getOrThrow(cart).removed(cart.getRemovalReason());
+        && cart.level() instanceof ServerLevel level && cart.isRemoved()) {
+      var reason = cart.getRemovalReason();
+      RollingStock.getOrThrow(cart).removed(reason);
+      if (reason != Entity.RemovalReason.UNLOADED_TO_CHUNK
+          && reason != Entity.RemovalReason.UNLOADED_WITH_PLAYER) {
+        TokenRingManager.get(level).cartRemoved(cart.getUUID());
+      }
+    }
+  }
+
+  @SubscribeEvent
+  public void handleChunkLoad(ChunkEvent.Load event) {
+    if (event.getLevel() instanceof ServerLevel level) {
+      for (var provider : ChargeProviderImpl.values()) {
+        var network = provider.existingNetwork(level);
+        if (network != null) {
+          network.chunkLoaded(event.getChunk().getPos());
+        }
+      }
+    }
+  }
+
+  @SubscribeEvent
+  public void handleChunkUnload(ChunkEvent.Unload event) {
+    if (event.getLevel() instanceof ServerLevel level) {
+      for (var provider : ChargeProviderImpl.values()) {
+        var network = provider.existingNetwork(level);
+        if (network != null) {
+          network.chunkUnloaded(event.getChunk().getPos());
+        }
+      }
     }
   }
 
@@ -442,11 +485,6 @@ public class Railcraft {
         }
       }
     }
-  }
-
-  @SubscribeEvent
-  public void handleNeighborNotify(BlockEvent.NeighborNotifyEvent event) {
-    event.getLevel().gameEvent(null, RailcraftGameEvents.NEIGHBOR_NOTIFY, event.getPos());
   }
 
   @SubscribeEvent
